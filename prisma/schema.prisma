@@ -1,0 +1,273 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum Role {
+  CUSTOMER
+  RESTAURANT_OWNER
+  ADMIN
+}
+
+enum RestaurantStatus {
+  PENDING
+  APPROVED
+  SUSPENDED
+  REJECTED
+}
+
+enum ListingFeeStatus {
+  UNPAID
+  PAID
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+  NO_SHOW
+}
+
+enum CouponType {
+  PERCENT
+  FIXED
+}
+
+enum CouponScope {
+  ALL
+  RESTAURANT
+  TABLE
+}
+
+enum PaymentType {
+  BOOKING_FEE
+  LISTING_FEE
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+}
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+  passwordHash  String?
+  role          Role      @default(CUSTOMER)
+  suspended     Boolean   @default(false)
+  createdAt     DateTime  @default(now())
+
+  accounts    Account[]
+  restaurants Restaurant[]
+  bookings    Booking[]
+  reviews     Review[]
+  auditLogs   AuditLog[]
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  email     String
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([email])
+}
+
+model Restaurant {
+  id               String           @id @default(cuid())
+  ownerId          String
+  slug             String           @unique
+  name             String
+  description      String           @db.Text
+  address          String
+  city             String
+  cuisine          String
+  phone            String?
+  email            String?
+  timezone         String           @default("UTC")
+  coverImageUrl    String?
+  galleryImages    String[]
+  status           RestaurantStatus @default(PENDING)
+  listingFeeStatus ListingFeeStatus @default(UNPAID)
+  stripeAccountId  String?
+  canAcceptPaid    Boolean          @default(false)
+  createdAt        DateTime         @default(now())
+
+  owner   User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  tables  Table[]
+  coupons Coupon[]
+  reviews Review[]
+
+  payments Payment[]
+
+  @@index([ownerId])
+  @@index([status, city])
+  @@index([cuisine])
+}
+
+model Table {
+  id           String   @id @default(cuid())
+  restaurantId String
+  name         String
+  description  String   @db.Text
+  locationTag  String   @default("CENTER")
+  photos       String[]
+  capacity     Int
+  bookingFee   Decimal  @default(0) @db.Decimal(10, 2)
+  currency     String   @default("usd")
+  isActive     Boolean  @default(true)
+  deletedAt    DateTime?
+  // availability settings
+  openDays        Int[]  @default([0, 1, 2, 3, 4, 5, 6])
+  openTime        String @default("17:00")
+  closeTime       String @default("23:00")
+  minDuration     Int    @default(60)
+  maxDuration     Int    @default(180)
+  bufferMinutes   Int    @default(15)
+  createdAt    DateTime @default(now())
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  bookings   Booking[]
+  coupons    Coupon[]
+
+  @@index([restaurantId])
+}
+
+model Booking {
+  id                    String        @id @default(cuid())
+  tableId               String
+  customerId            String?
+  guestName             String
+  guestEmail            String
+  guestPhone            String?
+  // startAt is the UTC instant the booking starts
+  startAt               DateTime
+  date                  String // yyyy-MM-dd in restaurant timezone
+  startTime             String // HH:mm in restaurant timezone
+  durationMinutes       Int
+  partySize             Int
+  status                BookingStatus @default(PENDING)
+  feeAmount             Decimal       @default(0) @db.Decimal(10, 2)
+  stripePaymentIntentId String?
+  couponId              String?
+  cancelToken           String        @unique @default(cuid())
+  createdAt             DateTime      @default(now())
+
+  table    Table    @relation(fields: [tableId], references: [id])
+  customer User?    @relation(fields: [customerId], references: [id])
+  coupon   Coupon?  @relation(fields: [couponId], references: [id])
+  payments Payment[]
+  review   Review?
+
+  @@index([tableId, date])
+  @@index([status])
+  @@index([customerId])
+  @@index([startAt])
+}
+
+model Coupon {
+  id             String      @id @default(cuid())
+  code           String      @unique
+  type           CouponType
+  value          Decimal     @db.Decimal(10, 2)
+  appliesTo      CouponScope @default(ALL)
+  restaurantId   String?
+  tableId        String?
+  maxRedemptions Int?
+  timesRedeemed  Int         @default(0)
+  expiresAt      DateTime?
+  isActive       Boolean     @default(true)
+  createdAt      DateTime    @default(now())
+
+  restaurant Restaurant? @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  table      Table?      @relation(fields: [tableId], references: [id], onDelete: Cascade)
+  bookings   Booking[]
+}
+
+model Payment {
+  id                    String        @id @default(cuid())
+  bookingId             String?
+  restaurantId          String?
+  stripePaymentIntentId String?
+  stripeSessionId       String?
+  amount                Decimal       @db.Decimal(10, 2)
+  platformFee           Decimal       @default(0) @db.Decimal(10, 2)
+  currency              String
+  type                  PaymentType
+  status                PaymentStatus @default(PENDING)
+  createdAt             DateTime      @default(now())
+
+  booking    Booking?    @relation(fields: [bookingId], references: [id])
+  restaurant Restaurant? @relation(fields: [restaurantId], references: [id])
+
+  @@index([bookingId])
+  @@index([restaurantId])
+  @@index([stripePaymentIntentId])
+  @@index([status, type])
+}
+
+model Review {
+  id           String   @id @default(cuid())
+  restaurantId String
+  customerId   String
+  bookingId    String   @unique
+  rating       Int
+  comment      String?  @db.Text
+  createdAt    DateTime @default(now())
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  customer   User       @relation(fields: [customerId], references: [id])
+  booking    Booking    @relation(fields: [bookingId], references: [id])
+
+  @@index([restaurantId])
+}
+
+model Setting {
+  key   String @id
+  value String
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String
+  action     String
+  entityType String
+  entityId   String
+  meta       Json?
+  createdAt  DateTime @default(now())
+
+  actor User @relation(fields: [actorId], references: [id])
+
+  @@index([createdAt])
+}
